@@ -286,8 +286,12 @@ export function AnalysisResults({
               />
               <h3 className="text-sm font-semibold text-fg">AI summary</h3>
             </div>
-            {result.ai.status === "ok" && result.ai.model && (
-              <span className="mono text-[10px] text-muted">{result.ai.model}</span>
+            {result.ai.status === "ok" && (
+              <span className="mono text-[10px] text-muted">
+                {result.ai.provider === "gemini" ? "Gemini" : "AI"}
+                {result.ai.model ? ` · ${result.ai.model}` : ""}
+                {result.ai.zeroCost ? " · free tier" : ""}
+              </span>
             )}
           </div>
 
@@ -306,6 +310,9 @@ export function AnalysisResults({
               )}
               <p className="mt-4 text-[10px] text-muted">
                 AI-generated from finding metadata only. Verify before acting.
+                {result.ai.zeroCost
+                  ? " Gemini free tier: prompts may be used to improve Google products, and no source code is sent."
+                  : ""}
               </p>
             </div>
           ) : result.ai.status === "error" ? (
@@ -318,8 +325,8 @@ export function AnalysisResults({
               <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
               <span>
                 AI summaries are off. Deterministic analysis is complete. Set{" "}
-                <span className="mono text-fg">AI_API_KEY</span> on the server to add a
-                plain-language briefing.
+                <span className="mono text-fg">GEMINI_API_KEY</span> on the server to add
+                a plain-language briefing from the Gemini free tier.
               </span>
             </div>
           )}

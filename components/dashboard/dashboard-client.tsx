@@ -25,9 +25,15 @@ type Status = "idle" | "loading" | "success" | "error";
 
 export function DashboardClient({
   aiEnabled,
+  aiProvider,
+  aiModel,
+  aiZeroCost,
   githubTokenConfigured,
 }: {
   aiEnabled: boolean;
+  aiProvider: "gemini" | "openai-compatible" | null;
+  aiModel: string | null;
+  aiZeroCost: boolean;
   githubTokenConfigured: boolean;
 }) {
   const [repoUrl, setRepoUrl] = useState("");
@@ -169,9 +175,20 @@ export function DashboardClient({
               ? "border-accent/30 bg-accent/10 text-accent-2"
               : "border-line bg-ink/50 text-muted",
           )}
+          title={
+            aiEnabled
+              ? `${aiProvider === "gemini" ? "Google Gemini" : "OpenAI-compatible provider"}${
+                  aiModel ? ` · ${aiModel}` : ""
+                }${aiZeroCost ? " · free tier only" : ""}`
+              : "Set GEMINI_API_KEY on the server to enable summaries"
+          }
         >
           <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-          {aiEnabled ? "AI summaries enabled" : "AI summaries off"}
+          {aiEnabled
+            ? aiZeroCost
+              ? "Gemini free tier"
+              : "AI summaries enabled"
+            : "AI summaries off"}
         </span>
         <span className="badge border-line bg-ink/50 text-muted">
           <Lock className="h-3.5 w-3.5" aria-hidden="true" />

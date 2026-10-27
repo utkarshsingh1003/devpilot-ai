@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveAiBaseUrl } from "@/lib/ai";
+import { resolveAiBaseUrl } from "@/lib/ai-config";
 import { readJsonBody } from "@/lib/request-body";
 import { resolveSiteUrl } from "@/lib/site-url";
 

@@ -29,7 +29,8 @@ Paste a public GitHub URL and DevPilot fetches a bounded snapshot of the actual 
   - missing tests and missing README
 - **Findings panel** with severity/category labels, filters, search, code snippets, and suggested fixes.
 - **Report export**: copy a Markdown report or download JSON.
-- **Optional AI summary** through any OpenAI-compatible chat-completions endpoint. The AI receives finding metadata only, never full source files.
+- **Optional AI summary** through Google Gemini's free tier (default) or any OpenAI-compatible chat-completions endpoint. The AI receives finding metadata only, never full source files.
+- **Zero-cost Gemini profile**: fixed Gemini Developer API endpoint, free-tier model allowlist, no tools or grounding, capped output tokens, and fail-closed configuration.
 - **Security basics**: strict GitHub URL validation, SSRF-resistant fetch targets, server-only secrets, input validation with Zod, a bounded request-body reader, best-effort in-memory rate limiting, and hardened security headers.
 - **Tests** for URL parsing, request validation, AI response parsing, and the deterministic analyzer.
 - **Responsive UI** with mobile navigation and accessible labels, focus states, and live regions.
@@ -48,7 +49,7 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-No environment variables are required to run the app or the demo. Without `GITHUB_TOKEN`, public repositories use GitHub's unauthenticated rate limit. Without `AI_API_KEY`, AI summaries are disabled and the deterministic report is still complete.
+No environment variables are required to run the app or the demo. Without `GITHUB_TOKEN`, public repositories use GitHub's unauthenticated rate limit. Without `GEMINI_API_KEY`, AI summaries are disabled and the deterministic report is still complete.
 
 ### Useful commands
 
@@ -71,9 +72,12 @@ Copy `.env.example` to `.env.local`. All secrets are server-side only. Never pre
 | Variable | Required | Purpose |
 |---|---|---|
 | `GITHUB_TOKEN` | No | Raises GitHub API limits from 60 to 5,000 requests/hour and enables private repositories. |
-| `AI_API_KEY` | No | Enables optional AI summaries. Any OpenAI-compatible key works. |
-| `AI_BASE_URL` | No | Chat-completions base URL. Default: `https://api.openai.com/v1`. |
-| `AI_MODEL` | No | Model name. Default: `gpt-4o-mini`. |
+| `GEMINI_API_KEY` | No | Enables optional AI summaries through the Gemini Developer API free tier. |
+| `AI_PROVIDER` | No | `gemini` or `openai-compatible`. Auto-detected from `GEMINI_API_KEY` when unset. |
+| `AI_MODEL` | No | Gemini: a free-tier model. Default: `gemini-3.8-flash`. |
+| `AI_MAX_OUTPUT_TOKENS` | No | Caps generated output (128–1024). Default: `512`. |
+| `AI_BASE_URL` | No | Gemini mode only accepts the fixed Developer API endpoint. Generic mode accepts any `http(s)` URL. |
+| `AI_API_KEY` | No | Generic OpenAI-compatible provider key, or a fallback Gemini key. |
 | `NEXT_PUBLIC_SITE_URL` | No | Canonical site URL for metadata, `robots.txt`, and `sitemap.xml`. |
 
 ### GitHub token
@@ -89,31 +93,46 @@ GITHUB_TOKEN=ghp_your_token_here
 
 Without a token, one analysis can use roughly `2 + number_of_files` GitHub API requests. With 24 files, that is about 26 requests. The unauthenticated limit is 60 requests/hour per IP, so a token is strongly recommended if you plan to run more than one or two analyses per hour.
 
-### AI provider examples
+### Google Gemini free tier (default, zero-cost)
 
-OpenAI:
+DevPilot uses Gemini through its OpenAI-compatible endpoint, so no extra SDK is required.
+
+1. Create a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+2. **Use a Google Cloud project without a billing account.** That is what keeps the project on the free tier.
+3. Add the key to `.env.local`:
 
 ```bash
-AI_API_KEY=sk-...
+GEMINI_API_KEY=your_gemini_api_key_here
+AI_MODEL=gemini-3.8-flash
+AI_MAX_OUTPUT_TOKENS=512
+```
+
+Do **not** set `AI_BASE_URL` in Gemini mode. If it is set, it must be exactly `https://generativelanguage.googleapis.com/v1beta/openai`; Vertex AI and custom endpoints are rejected.
+
+The app enforces the zero-cost profile in `lib/ai-config.ts`:
+
+- fixed Gemini Developer API endpoint (never Vertex AI)
+- free-tier model allowlist (`gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`)
+- no tools, grounding, file uploads, or search
+- output capped at 1,024 tokens (default 512)
+- invalid provider/model/endpoint configuration fails closed with a visible notice
+
+The app **cannot** verify your Google Cloud billing state. Keeping the project billing-free, and re-checking Google's [pricing page](https://ai.google.dev/gemini-api/docs/pricing) before changing the model allowlist, is your responsibility.
+
+> **Free-tier privacy note:** Google may use free-tier prompts and responses to improve its products. DevPilot sends finding metadata only — repository name, counts, languages, and up to 10 findings (title, file, line, severity, suggestion) — never source code. If that is unacceptable, leave `GEMINI_API_KEY` unset.
+
+### Alternative OpenAI-compatible provider
+
+Set `AI_PROVIDER=openai-compatible` explicitly. This path is **not** verified as zero-cost.
+
+```bash
+AI_PROVIDER=openai-compatible
+AI_API_KEY=your_key_here
 AI_BASE_URL=https://api.openai.com/v1
 AI_MODEL=gpt-4o-mini
 ```
 
-OpenRouter:
-
-```bash
-AI_API_KEY=sk-or-...
-AI_BASE_URL=https://openrouter.ai/api/v1
-AI_MODEL=your-model-name
-```
-
-Ollama (local, no cloud key):
-
-```bash
-AI_API_KEY=ollama
-AI_BASE_URL=http://localhost:11434/v1
-AI_MODEL=llama3.2
-```
+Local Ollama works the same way with `AI_BASE_URL=http://localhost:11434/v1`, `AI_API_KEY=ollama`, and `AI_MODEL=llama3.2`.
 
 If the AI request fails, the API returns the complete deterministic report plus an AI error notice. It never fails the whole analysis because of an optional summary.
 
@@ -205,17 +224,17 @@ Returns service status and non-secret configuration flags:
 ## Security and privacy
 
 - **No source code storage.** Files are fetched and analyzed in memory. There is no database, object store, or cache of repository contents.
-- **Server-only secrets.** `GITHUB_TOKEN`, `AI_API_KEY`, `AI_BASE_URL`, and `AI_MODEL` are read only in server code. No secret is exposed to the client bundle.
+- **Server-only secrets.** `GITHUB_TOKEN`, `GEMINI_API_KEY`, `AI_API_KEY`, `AI_PROVIDER`, `AI_BASE_URL`, `AI_MODEL`, and `AI_MAX_OUTPUT_TOKENS` are read only in server code. No secret is exposed to the client bundle, and `/api/health` returns only a non-secret provider/model/zero-cost summary.
 - **SSRF resistance.** The server only fetches `api.github.com` endpoints after strict GitHub URL validation. It does not accept arbitrary URLs.
 - **Input validation.** Request bodies are validated with Zod; GitHub owner/repo names use strict patterns; URL length is capped; malformed percent-encoding is rejected instead of throwing.
 - **Bounded request bodies.** `POST /api/analyze` rejects bodies over 10 KB. The cap is enforced from `Content-Length` and while streaming, so a chunked request cannot force unbounded buffering.
 - **Bounded work.** File count, file size, total size, timeouts, and concurrency are capped.
 - **Best-effort rate limiting.** The in-memory limiter slows accidental abuse but is not shared across serverless instances. For production-scale protection, put the app behind a platform rate limiter or add Redis/Upstash.
 - **Security headers.** A restrictive Content-Security-Policy (no third-party scripts, `frame-ancestors 'none'`, `object-src 'none'`), `nosniff`, `DENY` framing, strict referrer policy, permissions policy, same-origin opener policy, and HSTS. `unsafe-eval` is limited to the development server.
-- **Configuration validation.** An invalid `NEXT_PUBLIC_SITE_URL` falls back to localhost instead of crashing the build; an invalid `AI_BASE_URL` produces an AI-disabled notice instead of an unsafe fetch target.
+- **Configuration validation.** An invalid `NEXT_PUBLIC_SITE_URL` falls back to localhost instead of crashing the build. Invalid AI configuration (unknown provider, non-allowlisted model, or a non-Gemini endpoint in Gemini mode) fails closed with a visible notice instead of making a paid or unsafe request.
 - **AI minimization.** The AI layer receives finding metadata, not source files or snippets. It is instructed not to invent findings, and its output is validated with Zod before display.
 
-If you analyze private code, review your AI provider's terms. If you do not want code metadata leaving your infrastructure, leave `AI_API_KEY` unset.
+If you analyze private code, review your AI provider's terms. If you do not want code metadata leaving your infrastructure, leave `GEMINI_API_KEY` and `AI_API_KEY` unset.
 
 ---
 
@@ -234,6 +253,9 @@ The test suite covers:
 - request validation for demo/GitHub modes
 - AI response parsing and rejection of malformed/invented shapes
 - AI base URL validation (http/https only)
+- Gemini zero-cost configuration: provider detection, free-tier allowlist, endpoint pinning, token clamping, and fail-closed errors
+- AI status reporting that never leaks the API key
+- `generateAiInsight` with a mocked provider (success, provider error, invalid JSON, disabled, invalid config)
 - site URL normalization and safe fallback
 - bounded JSON body reading (valid, malformed, oversized, declared-length abuse)
 - demo analysis producing real rule IDs
@@ -248,7 +270,7 @@ Verified locally during development:
 
 - `npm run typecheck` — passed
 - `npm run lint` — passed
-- `npm test` — 28 tests passed across 4 files
+- `npm test` — 50 tests passed across 5 files
 - `npm run build` — passed
 - production server: `/`, `/dashboard`, `/api/health`, `/robots.txt`, `/sitemap.xml` returned 200
 - `POST /api/analyze` demo mode returned 200 with real findings
@@ -257,8 +279,12 @@ Verified locally during development:
 - `POST /api/analyze` with a 20 KB body returned 413
 - CSP and HSTS headers present; dashboard rendered with zero console errors
 - desktop (1440px) and mobile (390px) layouts had no horizontal overflow
+- `/api/health` without a key reports `ai.enabled: false`
+- `/api/health` with a test key reports `provider: "gemini"`, `model: "gemini-3.8-flash"`, `zeroCost: true` and never echoes the key
+- a request to the real Gemini endpoint with a fake key returned 400; the demo report still completed with an AI error notice
+- an off-allowlist model (`gemini-3-pro`) fails closed: `ai.enabled: false` in health and a clear error in the report, with no provider call
 
-The live AI provider path was **not** tested with a real key in this environment. It is implemented with graceful failure handling. Private-repository access with a token was also not tested because no token was available.
+The live AI provider path was **not** verified with a valid Gemini key in this environment, so a successful live summary is unconfirmed. The endpoint path, request shape, fail-soft behavior, and fail-closed configuration were verified. Private-repository access with a token was also not tested because no token was available.
 
 ---
 
@@ -278,7 +304,8 @@ The live AI provider path was **not** tested with a real key in this environment
 3. Framework preset: **Next.js**. Root directory: `.`. Install command: `npm ci` (uses the committed lockfile). Build command: `npm run build`. Output: default `.next`.
 4. Add environment variables in **Project → Settings → Environment Variables**:
    - `GITHUB_TOKEN` (recommended)
-   - `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` (optional)
+   - `GEMINI_API_KEY` (optional, Gemini free tier)
+   - `AI_MODEL` and `AI_MAX_OUTPUT_TOKENS` (optional)
    - `NEXT_PUBLIC_SITE_URL` set to your final `https://...` domain
 5. Deploy.
 6. Verify:
@@ -293,7 +320,8 @@ No database, storage bucket, cron job, or background worker is required.
 
 - [ ] `npm ci && npm run typecheck && npm run lint && npm test && npm run build` pass in a clean checkout
 - [ ] No `.env*` file is committed (`.env.example` is the only committed template)
-- [ ] `GITHUB_TOKEN` and `AI_API_KEY` are set only in Vercel project settings, never in source
+- [ ] `GITHUB_TOKEN` and `GEMINI_API_KEY` are set only in Vercel project settings, never in source
+- [ ] The Gemini key belongs to a Google Cloud project without billing enabled
 - [ ] `NEXT_PUBLIC_SITE_URL` matches the production domain
 - [ ] `/api/health` reports `status: "ok"` after deploy
 - [ ] `/dashboard?demo=1` completes without credentials
@@ -333,7 +361,8 @@ lib/
   analysis/analyze.ts        deterministic engine
   analysis/rules.ts          rule definitions
   github.ts                  GitHub fetch + limits
-  ai.ts                      optional OpenAI-compatible summary
+  ai.ts                      optional AI summary request + validation
+  ai-config.ts               zero-cost Gemini / provider configuration
   demo.ts                    bundled sample repository
   repo-url.ts                strict URL parsing
   request-body.ts            bounded JSON body reader
@@ -341,7 +370,7 @@ lib/
   validation.ts              Zod request validation
   types.ts                   shared types
   format.ts                  report formatting
-tests/                       28 Vitest tests
+tests/                       50 Vitest tests
 ```
 
 ---
@@ -362,7 +391,15 @@ The repository may contain only unsupported languages, or the files may be too l
 
 ### AI summary is missing
 
-Set `AI_API_KEY` and restart. The deterministic report works without it. If the provider fails, the report still returns with an AI error notice.
+Set `GEMINI_API_KEY` in `.env.local` and restart the server. Use a Google Cloud project without billing enabled. The deterministic report works without it. If the provider fails, the report still returns with an AI error notice.
+
+### "Model ... is not on the free-tier allowlist"
+
+DevPilot refuses models that are not verified as free-tier eligible. Use one of the models listed in `lib/ai-config.ts`, or remove `AI_MODEL` to use `gemini-3.8-flash`. Re-check Google's pricing page before adding a model.
+
+### "AI_BASE_URL must be unset or set to the Gemini Developer API endpoint"
+
+In Gemini mode, DevPilot pins the endpoint to `https://generativelanguage.googleapis.com/v1beta/openai` so it cannot accidentally call Vertex AI or a paid/custom endpoint. Remove `AI_BASE_URL` or set it to that exact value.
 
 ### Too many analyses
 

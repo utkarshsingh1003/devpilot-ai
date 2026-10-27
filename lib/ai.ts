@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { resolveAiConfig, resolveAiProvider } from "./ai-config";
+import type { AiEnv } from "./ai-config";
 import type { AiInsight, AnalysisResult } from "./types";
 
 const AI_TIMEOUT_MS = 20_000;
@@ -25,43 +27,41 @@ export function parseAiResponse(content: string): z.infer<typeof aiResponseSchem
   }
 }
 
-/**
- * Validates the configured AI endpoint. Only absolute HTTP(S) URLs are accepted
- * so a misconfigured environment variable cannot point the server at a
- * non-network protocol or a relative path.
- */
-export function resolveAiBaseUrl(raw?: string): string | null {
-  const candidate = raw?.trim() || "https://api.openai.com/v1";
-  try {
-    const url = new URL(candidate);
-    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-    return url.toString().replace(/\/+$/, "");
-  } catch {
-    return null;
-  }
+interface GenerateAiInsightOptions {
+  env?: AiEnv;
+  fetchImpl?: typeof fetch;
 }
 
 /**
  * Optional AI layer. It receives finding metadata only — never full source
  * files or code snippets — and must not invent new findings.
+ *
+ * Configuration is resolved by `resolveAiConfig`, which enforces the zero-cost
+ * Gemini profile: fixed Developer API endpoint, free-tier model allowlist, and
+ * a capped output budget. No tools, grounding, or file uploads are ever sent.
  */
-export async function generateAiInsight(result: AnalysisResult): Promise<AiInsight> {
-  const apiKey = process.env.AI_API_KEY?.trim();
-  if (!apiKey) {
-    return { enabled: false, status: "disabled" };
-  }
+export async function generateAiInsight(
+  result: AnalysisResult,
+  options: GenerateAiInsightOptions = {},
+): Promise<AiInsight> {
+  const env = options.env ?? process.env;
+  const fetchImpl = options.fetchImpl ?? fetch;
 
-  const baseUrl = resolveAiBaseUrl(process.env.AI_BASE_URL);
-  if (!baseUrl) {
+  const config = resolveAiConfig(env);
+  if (!config.ok) {
+    if (config.reason === "disabled") {
+      return { enabled: false, status: "disabled", zeroCost: false };
+    }
     return {
       enabled: true,
       status: "error",
-      error:
-        "AI summaries are misconfigured: AI_BASE_URL must be an absolute http(s) URL. The deterministic analysis is unaffected.",
+      provider: resolveAiProvider(env) ?? undefined,
+      zeroCost: false,
+      error: config.message,
     };
   }
 
-  const model = process.env.AI_MODEL?.trim() || "gpt-4o-mini";
+  const { provider, model, baseUrl, apiKey, maxOutputTokens, zeroCost } = config;
 
   const payload = {
     repository: result.repo.fullName,
@@ -85,7 +85,7 @@ export async function generateAiInsight(result: AnalysisResult): Promise<AiInsig
   };
 
   try {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await fetchImpl(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -94,7 +94,7 @@ export async function generateAiInsight(result: AnalysisResult): Promise<AiInsig
       body: JSON.stringify({
         model,
         temperature: 0.2,
-        max_tokens: 450,
+        max_tokens: maxOutputTokens,
         messages: [
           {
             role: "system",
@@ -131,6 +131,8 @@ export async function generateAiInsight(result: AnalysisResult): Promise<AiInsig
     return {
       enabled: true,
       status: "ok",
+      provider,
+      zeroCost,
       model,
       summary: parsed.summary,
       priorities: parsed.priorities,
@@ -143,6 +145,8 @@ export async function generateAiInsight(result: AnalysisResult): Promise<AiInsig
     return {
       enabled: true,
       status: "error",
+      provider,
+      zeroCost,
       model,
       error:
         "AI summary could not be generated. The deterministic analysis below is complete and unaffected.",

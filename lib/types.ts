@@ -78,9 +78,14 @@ export interface RepoMeta {
 
 export type AiStatus = "disabled" | "ok" | "error";
 
+export type AiProvider = "gemini" | "openai-compatible";
+
 export interface AiInsight {
   enabled: boolean;
   status: AiStatus;
+  provider?: AiProvider;
+  /** True only when the request is pinned to the Gemini free-tier profile. */
+  zeroCost?: boolean;
   model?: string;
   summary?: string;
   priorities?: string[];
