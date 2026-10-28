@@ -300,19 +300,175 @@ describe("generateAiInsight", () => {
     const body = JSON.parse(String(init.body));
     expect(body.model).toBe("gemini-3.8-flash");
     expect(body.max_tokens).toBe(256);
+    expect(body.reasoning_effort).toBe("low");
     expect(body.tools).toBeUndefined();
     expect(body.response_format).toBeUndefined();
     expect(body.messages[0].content).not.toContain("const key");
   });
 
-  it("returns an error insight when the provider fails", async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse({ error: "boom" }, 500));
+  it("does not send Gemini-only reasoning effort to generic providers", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                summary: "A generic provider summary was returned.",
+                priorities: ["Review the finding"],
+              }),
+            },
+          },
+        ],
+      }),
+    );
+
+    const insight = await generateAiInsight(sampleResult(), {
+      env: {
+        AI_PROVIDER: "openai-compatible",
+        AI_API_KEY: "test-key",
+        AI_BASE_URL: "https://api.openai.com/v1",
+        AI_MODEL: "gpt-4o-mini",
+      },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(insight.status).toBe("ok");
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    expect(body.reasoning_effort).toBeUndefined();
+  });
+
+  it("retries a transient 503 and succeeds", async () => {
+    const sleep = vi.fn(async () => {});
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ error: "busy" }, 503))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: "The retry succeeded after a transient failure.",
+                  priorities: ["Review the finding"],
+                }),
+              },
+            },
+          ],
+        }),
+      );
+
     const insight = await generateAiInsight(sampleResult(), {
       env: { GEMINI_API_KEY: "test-key" },
       fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleepImpl: sleep,
+      random: () => 0.5,
     });
+
+    expect(insight.status).toBe("ok");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(625);
+  });
+
+  it("honors Retry-After for transient rate limits", async () => {
+    const sleep = vi.fn(async () => {});
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "rate limited" }), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "2" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: "The rate-limited request succeeded after waiting.",
+                  priorities: ["Review the finding"],
+                }),
+              },
+            },
+          ],
+        }),
+      );
+
+    const insight = await generateAiInsight(sampleResult(), {
+      env: { GEMINI_API_KEY: "test-key" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleepImpl: sleep,
+    });
+
+    expect(insight.status).toBe("ok");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(2000);
+  });
+
+  it("retries a network failure and succeeds", async () => {
+    const sleep = vi.fn(async () => {});
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: "The network retry succeeded.",
+                  priorities: ["Review the finding"],
+                }),
+              },
+            },
+          ],
+        }),
+      );
+
+    const insight = await generateAiInsight(sampleResult(), {
+      env: { GEMINI_API_KEY: "test-key" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleepImpl: sleep,
+      random: () => 0,
+    });
+
+    expect(insight.status).toBe("ok");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(500);
+  });
+
+  it("stops after the bounded retry budget", async () => {
+    const sleep = vi.fn(async () => {});
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: "busy" }, 503));
+
+    const insight = await generateAiInsight(sampleResult(), {
+      env: { GEMINI_API_KEY: "test-key" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleepImpl: sleep,
+      random: () => 0,
+    });
+
+    expect(insight.status).toBe("error");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry non-transient provider errors", async () => {
+    const sleep = vi.fn(async () => {});
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: "bad request" }, 400));
+
+    const insight = await generateAiInsight(sampleResult(), {
+      env: { GEMINI_API_KEY: "test-key" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleepImpl: sleep,
+    });
+
     expect(insight.status).toBe("error");
     expect(insight.error).toMatch(/deterministic analysis/i);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it("returns an error insight for invalid JSON content", async () => {

@@ -9,6 +9,18 @@ const MAX_FILE_BYTES = 100_000;
 const MAX_TOTAL_BYTES = 300_000;
 const FETCH_TIMEOUT_MS = 12_000;
 
+const TIME_BUDGET_MESSAGE =
+  "GitHub requests exceeded the analysis time limit. Try a smaller repository or try again.";
+
+function timeBudgetError(): GitHubError {
+  return new GitHubError(TIME_BUDGET_MESSAGE, 504);
+}
+
+export interface LoadGitHubOptions {
+  /** Absolute epoch-ms deadline shared by every GitHub request. */
+  deadline?: number;
+}
+
 interface GitHubRepoResponse {
   name: string;
   full_name: string;
@@ -57,15 +69,26 @@ function githubHeaders(token?: string): HeadersInit {
   };
 }
 
-async function githubFetch(url: string, token?: string): Promise<Response> {
+async function githubFetch(
+  url: string,
+  token?: string,
+  deadline?: number,
+): Promise<Response> {
+  const remaining =
+    deadline === undefined ? FETCH_TIMEOUT_MS : deadline - Date.now();
+  if (remaining <= 0) throw timeBudgetError();
+
   let response: Response;
   try {
     response = await fetch(url, {
       headers: githubHeaders(token),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(Math.min(FETCH_TIMEOUT_MS, remaining)),
       cache: "no-store",
     });
   } catch (error) {
+    if (deadline !== undefined && Date.now() >= deadline) {
+      throw timeBudgetError();
+    }
     console.error(
       "[devpilot] GitHub request failed:",
       error instanceof Error ? `${error.name}: ${error.message}` : "unknown error",
@@ -105,8 +128,12 @@ async function githubFetch(url: string, token?: string): Promise<Response> {
   );
 }
 
-async function fetchJson<T>(url: string, token?: string): Promise<T> {
-  const response = await githubFetch(url, token);
+async function fetchJson<T>(
+  url: string,
+  token?: string,
+  deadline?: number,
+): Promise<T> {
+  const response = await githubFetch(url, token, deadline);
   try {
     return (await response.json()) as T;
   } catch {
@@ -127,11 +154,12 @@ async function fetchFileContent(
   branch: string,
   path: string,
   token?: string,
+  deadline?: number,
 ): Promise<string> {
   const url = `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
     repo,
   )}/contents/${encodePath(path)}?ref=${encodeURIComponent(branch)}`;
-  const data = await fetchJson<GitHubContentResponse>(url, token);
+  const data = await fetchJson<GitHubContentResponse>(url, token, deadline);
 
   if (data.type !== "file" || typeof data.content !== "string") {
     throw new Error("Not a regular file");
@@ -185,7 +213,11 @@ function priority(path: string): number {
  * Fetches and validates a GitHub repository, then returns a snapshot for the
  * deterministic analyzer. Only github.com API endpoints are contacted.
  */
-export async function loadGitHubRepository(input: string): Promise<AnalyzeInput> {
+export async function loadGitHubRepository(
+  input: string,
+  options: LoadGitHubOptions = {},
+): Promise<AnalyzeInput> {
+  const { deadline } = options;
   const parsed = parseRepoUrl(input);
   if (!parsed) {
     throw new GitHubError(
@@ -198,7 +230,7 @@ export async function loadGitHubRepository(input: string): Promise<AnalyzeInput>
   const { owner, repo } = parsed;
   const base = `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 
-  const metadata = await fetchJson<GitHubRepoResponse>(base, token);
+  const metadata = await fetchJson<GitHubRepoResponse>(base, token, deadline);
   const branch = parsed.branch || metadata.default_branch;
   if (!branch) {
     throw new GitHubError("Could not determine the repository's default branch.", 502);
@@ -207,6 +239,7 @@ export async function loadGitHubRepository(input: string): Promise<AnalyzeInput>
   const tree = await fetchJson<GitHubTreeResponse>(
     `${base}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
     token,
+    deadline,
   );
 
   const paths = tree.tree.filter((entry) => entry.type === "blob");
@@ -232,11 +265,27 @@ export async function loadGitHubRepository(input: string): Promise<AnalyzeInput>
   }
 
   const warnings: string[] = [];
+  let budgetWarningAdded = false;
   const contents = await mapWithConcurrency(selected, 4, async (entry) => {
+    if (deadline !== undefined && Date.now() >= deadline) {
+      if (!budgetWarningAdded) {
+        budgetWarningAdded = true;
+        warnings.push("GitHub time limit reached; some files were not analyzed.");
+      }
+      return null;
+    }
+
     try {
       return {
         path: entry.path,
-        content: await fetchFileContent(owner, repo, branch, entry.path, token),
+        content: await fetchFileContent(
+          owner,
+          repo,
+          branch,
+          entry.path,
+          token,
+          deadline,
+        ),
       };
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Unknown error";
@@ -254,6 +303,7 @@ export async function loadGitHubRepository(input: string): Promise<AnalyzeInput>
   }
 
   if (files.length === 0) {
+    if (deadline !== undefined && Date.now() >= deadline) throw timeBudgetError();
     throw new GitHubError(
       "No supported source files could be read from this repository. DevPilot analyzes TypeScript, JavaScript, and Python files.",
       422,

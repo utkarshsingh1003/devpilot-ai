@@ -1,14 +1,24 @@
 import { NextResponse } from "next/server";
 import { analyzeRepository } from "@/lib/analysis/analyze";
 import { generateAiInsight } from "@/lib/ai";
+import { getAiStatus } from "@/lib/ai-config";
 import { getDemoResult } from "@/lib/demo";
 import { GitHubError, loadGitHubRepository } from "@/lib/github";
 import { readJsonBody } from "@/lib/request-body";
+import type { AiInsight, AnalysisResult } from "@/lib/types";
 import { validateAnalyzeRequest } from "@/lib/validation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+/**
+ * Stay below `maxDuration` so the client receives a JSON response instead of a
+ * platform-killed connection, and reserve enough of that budget for AI.
+ */
+const ANALYSIS_BUDGET_MS = 55_000;
+const GITHUB_BUDGET_MS = 30_000;
+const AI_MIN_BUDGET_MS = 8_000;
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 8;
@@ -65,6 +75,47 @@ function errorResponse(message: string, status: number, retryAfter?: number) {
   );
 }
 
+function aiBudgetExceededInsight(): AiInsight {
+  const status = getAiStatus();
+  return {
+    enabled: status.enabled,
+    status: "error",
+    provider: status.provider ?? undefined,
+    model: status.model ?? undefined,
+    zeroCost: status.zeroCost,
+    error:
+      "AI summary was skipped to stay within the request time limit. The deterministic analysis below is complete and unaffected.",
+  };
+}
+
+/**
+ * Runs the optional AI summary, but never past the request deadline. The
+ * deterministic result must still be returned if the provider is slow.
+ */
+async function generateAiWithinBudget(
+  result: AnalysisResult,
+  deadline: number,
+): Promise<AiInsight> {
+  if (deadline - Date.now() < AI_MIN_BUDGET_MS) {
+    console.error("[devpilot] AI summary skipped: request budget exhausted.");
+    return aiBudgetExceededInsight();
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), deadline - Date.now());
+  });
+
+  try {
+    const insight = await Promise.race([generateAiInsight(result), budget]);
+    if (insight) return insight;
+    console.error("[devpilot] AI summary exceeded the request budget.");
+    return aiBudgetExceededInsight();
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export async function POST(request: Request) {
   const rate = checkRateLimit(clientKey(request));
   if (!rate.allowed) {
@@ -86,12 +137,17 @@ export async function POST(request: Request) {
   }
 
   try {
+    const deadline = Date.now() + ANALYSIS_BUDGET_MS;
     const result =
       validated.mode === "demo"
         ? getDemoResult()
-        : analyzeRepository(await loadGitHubRepository(validated.repoUrl));
+        : analyzeRepository(
+            await loadGitHubRepository(validated.repoUrl, {
+              deadline: Math.min(deadline, Date.now() + GITHUB_BUDGET_MS),
+            }),
+          );
 
-    result.ai = await generateAiInsight(result);
+    result.ai = await generateAiWithinBudget(result, deadline);
 
     return NextResponse.json(result, {
       headers: { "Cache-Control": "no-store" },

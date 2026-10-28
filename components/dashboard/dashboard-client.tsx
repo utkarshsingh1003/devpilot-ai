@@ -50,10 +50,12 @@ export function DashboardClient({
     const controller = new AbortController();
     abortRef.current = controller;
     let timedOut = false;
+    // Slightly above the server's 55s analysis budget so the server's own
+    // JSON error (or partial result) is preferred over a client abort.
     const timeout = window.setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, 90_000);
+    }, 60_000);
 
     setStatus("loading");
     setError(null);
