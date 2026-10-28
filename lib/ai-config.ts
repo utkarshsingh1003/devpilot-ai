@@ -20,7 +20,12 @@ export type AiEnv = Record<string, string | undefined>;
 export const GEMINI_OPENAI_BASE_URL =
   "https://generativelanguage.googleapis.com/v1beta/openai";
 
-export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+/**
+ * Default to a model verified to respond reliably within the request budget.
+ * `gemini-3.8-flash` is still listed by the API but did not respond in testing
+ * (>90s, both native and OpenAI-compatible endpoints), so it is not the default.
+ */
+export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
 export const DEFAULT_COMPATIBLE_MODEL = "gpt-4o-mini";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 512;
 export const MIN_MAX_OUTPUT_TOKENS = 128;

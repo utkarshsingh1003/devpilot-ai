@@ -74,7 +74,7 @@ Copy `.env.example` to `.env.local`. All secrets are server-side only. Never pre
 | `GITHUB_TOKEN` | No | Raises GitHub API limits from 60 to 5,000 requests/hour and enables private repositories. |
 | `GEMINI_API_KEY` | No | Enables optional AI summaries through the Gemini Developer API free tier. |
 | `AI_PROVIDER` | No | `gemini` or `openai-compatible`. Auto-detected from `GEMINI_API_KEY` when unset. |
-| `AI_MODEL` | No | Gemini: a free-tier model. Default: `gemini-3.8-flash`. |
+| `AI_MODEL` | No | Gemini: a free-tier model. Default: `gemini-3.5-flash-lite`. |
 | `AI_MAX_OUTPUT_TOKENS` | No | Caps generated output (128–1024). Default: `512`. |
 | `AI_BASE_URL` | No | Gemini mode only accepts the fixed Developer API endpoint. Generic mode accepts any `http(s)` URL. |
 | `AI_API_KEY` | No | Generic OpenAI-compatible provider key, or a fallback Gemini key. |
@@ -103,7 +103,7 @@ DevPilot uses Gemini through its OpenAI-compatible endpoint, so no extra SDK is 
 
 ```bash
 GEMINI_API_KEY=your_gemini_api_key_here
-AI_MODEL=gemini-3.8-flash
+AI_MODEL=gemini-3.5-flash-lite
 AI_MAX_OUTPUT_TOKENS=512
 ```
 
@@ -280,7 +280,7 @@ Verified locally during development:
 - CSP and HSTS headers present; dashboard rendered with zero console errors
 - desktop (1440px) and mobile (390px) layouts had no horizontal overflow
 - `/api/health` without a key reports `ai.enabled: false`
-- `/api/health` with a test key reports `provider: "gemini"`, `model: "gemini-3.8-flash"`, `zeroCost: true` and never echoes the key
+- `/api/health` with a test key reports `provider: "gemini"`, `model: "gemini-3.5-flash-lite"`, `zeroCost: true` and never echoes the key
 - a request to the real Gemini endpoint with a fake key returned 400; the demo report still completed with an AI error notice
 - an off-allowlist model (`gemini-3-pro`) fails closed: `ai.enabled: false` in health and a clear error in the report, with no provider call
 
@@ -395,7 +395,7 @@ Set `GEMINI_API_KEY` in `.env.local` and restart the server. Use a Google Cloud 
 
 ### "Model ... is not on the free-tier allowlist"
 
-DevPilot refuses models that are not verified as free-tier eligible. Use one of the models listed in `lib/ai-config.ts`, or remove `AI_MODEL` to use `gemini-3.8-flash`. Re-check Google's pricing page before adding a model.
+DevPilot refuses models that are not verified as free-tier eligible. Use one of the models listed in `lib/ai-config.ts`, or remove `AI_MODEL` to use `gemini-3.5-flash-lite`. Re-check Google's pricing page before adding a model.
 
 ### "AI_BASE_URL must be unset or set to the Gemini Developer API endpoint"
 
